@@ -1,0 +1,215 @@
+{
+  "69": {
+    "inputs": {
+      "width": [
+        "144",
+        0
+      ],
+      "height": [
+        "145",
+        0
+      ],
+      "batch_size": [
+        "192",
+        0
+      ]
+    },
+    "class_type": "EmptyFlux2LatentImage",
+    "_meta": {
+      "title": "Empty Flux 2 Latent"
+    }
+  },
+  "113": {
+    "inputs": {
+      "text": [
+        "163",
+        0
+      ],
+      "clip": [
+        "122",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP文本编码"
+    }
+  },
+  "114": {
+    "inputs": {
+      "conditioning": [
+        "113",
+        0
+      ]
+    },
+    "class_type": "ConditioningZeroOut",
+    "_meta": {
+      "title": "条件零化"
+    }
+  },
+  "115": {
+    "inputs": {
+      "seed": [
+        "161",
+        0
+      ],
+      "steps": 6,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "ddim_uniform",
+      "denoise": 1,
+      "model": [
+        "119",
+        0
+      ],
+      "positive": [
+        "113",
+        0
+      ],
+      "negative": [
+        "114",
+        0
+      ],
+      "latent_image": [
+        "69",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "K采样器"
+    }
+  },
+  "116": {
+    "inputs": {
+      "unet_name": "flux-2-klein-4b-fp8.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "UNet加载器"
+    }
+  },
+  "119": {
+    "inputs": {
+      "enable_fp16_accumulation": true,
+      "model": [
+        "116",
+        0
+      ]
+    },
+    "class_type": "ModelPatchTorchSettings",
+    "_meta": {
+      "title": "Model Patch Torch Settings"
+    }
+  },
+  "120": {
+    "inputs": {
+      "samples": [
+        "115",
+        0
+      ],
+      "vae": [
+        "123",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE解码"
+    }
+  },
+  "122": {
+    "inputs": {
+      "clip_name": "qwen_3_4b.safetensors",
+      "type": "flux2",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "加载CLIP"
+    }
+  },
+  "123": {
+    "inputs": {
+      "vae_name": "flux2-vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "加载VAE"
+    }
+  },
+  "144": {
+    "inputs": {
+      "Number": "512"
+    },
+    "class_type": "Int",
+    "_meta": {
+      "title": "Int"
+    }
+  },
+  "145": {
+    "inputs": {
+      "Number": "512"
+    },
+    "class_type": "Int",
+    "_meta": {
+      "title": "Int"
+    }
+  },
+  "146": {
+    "inputs": {
+      "filename_prefix": "ComfyUI",
+      "images": [
+        "120",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "保存图像"
+    }
+  },
+  "161": {
+    "inputs": {
+      "seed": 924889617436988
+    },
+    "class_type": "easy seed",
+    "_meta": {
+      "title": "随机种"
+    }
+  },
+  "163": {
+    "inputs": {
+      "prompt": [
+        "203",
+        0
+      ],
+      "start_index": 0,
+      "max_rows": 1000,
+      "remove_empty_lines": ""
+    },
+    "class_type": "easy promptLine",
+    "_meta": {
+      "title": "提示词行"
+    }
+  },
+  "192": {
+    "inputs": {
+      "Number": "1"
+    },
+    "class_type": "Int",
+    "_meta": {
+      "title": "Int"
+    }
+  },
+  "203": {
+    "inputs": {
+      "text": "App icon for \"FolderPainter\". A friendly, anthropomorphic manila file folder character in a cheerful 2D cartoon illustration style. The folder wears a tilted red artist's beret on its top corner. One of its flaps acts as a hand, holding a paintbrush with colorful paint (blue, yellow, red) dripping from the tip. The folder has big, expressive eyes giving a playful wink and a confident smile. Its surface is splattered with colorful paint spots and creative doodles. Clean lines, flat colors, simple off-white background."
+    },
+    "class_type": "CR Text",
+    "_meta": {
+      "title": "🔤 CR Text"
+    }
+  }
+}

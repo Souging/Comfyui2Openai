@@ -1,4 +1,4 @@
-//! ComfyUI backend communication and request/response handling
+//! ComfyUI Backend Communication & Request Processing Module
 //!
 //! This module handles the translation between OpenAI API format and ComfyUI format,
 //! manages image generation requests, and retrieves generated images from the backend.
@@ -22,38 +22,42 @@ use std::fs;
 use std::path::Path;
 use rand::Rng;
 
-/// Metadata for an image file from ComfyUI output
+/// Metadata for ComfyUI output images
 ///
-/// Used to construct the query string for retrieving images from the backend
+/// Used to construct the query string for retrieving images.
 #[derive(Debug, Clone, Serialize)]
 struct ImageFile {
-    /// Image filename in the ComfyUI output directory
+    /// Filename in the ComfyUI output directory
     filename: String,
-    /// Subdirectory within the output folder
+    /// Subfolder within the output directory
     subfolder: String,
-    /// Image type (e.g., "output", "temp")
+    /// Image type (e.g., "output" for final result, "temp" for preview)
     #[serde(rename = "type")]
     type_field: String,
 }
 
-/// Loads ComfyUI workflow (workflow) JSON files from a directory
+// =================================================================================
+//  Section: Workflow Loading
+// =================================================================================
+
+/// Workflow Loader
 ///
-/// Workflows are definitions that describe the image generation process.
-/// Each workflow is a JSON file that can be referenced by model name in API requests.
+/// Responsible for loading ComfyUI workflow JSON files from a specified directory.
+/// These files define the specific image generation process and are referenced by the `model` name in API requests.
 pub struct WorkflowsLoader;
 
 impl WorkflowsLoader {
-    /// Loads all .json files from the specified folder
+    /// Scans and loads all JSON files from the folder
     ///
-    /// Scans the directory and loads all JSON files, using the filename (without extension)
-    /// as the key. This allows clients to reference workflows by name in their requests.
+    /// Uses the filename (without extension) as the key. This allows clients to specify the workflow
+    /// using the `model` field in the request.
     ///
     /// # Arguments
-    /// * `folder_path` - Path to directory containing workflow JSON files
+    /// * `folder_path` - Path to the directory containing workflow JSON files
     ///
     /// # Returns
-    /// - HashMap with workflow name -> JSON content
-    /// - Error if directory doesn't exist, is invalid, or JSON parsing fails
+    /// - `HashMap<String, Value>`: Map of Workflow Name -> JSON Content
+    /// - `String`: Error message if directory doesn't exist or JSON parsing fails
     ///
     /// # Example
     /// ```no_run
@@ -62,35 +66,35 @@ impl WorkflowsLoader {
     /// ```
     pub fn load_from_folder(folder_path: &str) -> Result<HashMap<String, Value>, String> {
         let path = Path::new(folder_path);
-        
-        // Validate that the folder exists
+
+        // Verify folder existence
         if !path.exists() {
             return Err(format!("Workflows folder does not exist: {}", folder_path));
         }
-        
-        // Validate that the path is a directory
+
+        // Verify it is a directory
         if !path.is_dir() {
             return Err(format!("Workflows path is not a directory: {}", folder_path));
         }
-        
+
         let mut workflows = HashMap::new();
-        
+
         // Read all entries in the directory
         let entries = fs::read_dir(path)
             .map_err(|e| format!("Failed to read workflows directory: {}", e))?;
-        
+
         for entry in entries {
             let entry = entry
                 .map_err(|e| format!("Failed to read directory entry: {}", e))?;
             let file_path = entry.path();
-            
-            // Only process JSON files
+
+            // Process only JSON files
             if file_path.extension()
                 .and_then(|ext| ext.to_str())
                 .map(|ext| ext.eq_ignore_ascii_case("json"))
                 .unwrap_or(false)
             {
-                // Extract filename without extension (used as workflow name)
+                // Extract filename as workflow name
                 let filename = file_path
                     .file_stem()
                     .and_then(|stem| stem.to_str())
@@ -98,24 +102,24 @@ impl WorkflowsLoader {
                         format!("Failed to get filename for: {:?}", file_path)
                     })?
                     .to_string();
-                
-                // Read the JSON file contents
+
+                // Read JSON content
                 let file_content = fs::read_to_string(&file_path)
                     .map_err(|e| {
                         format!("Failed to read JSON file {}: {}", file_path.display(), e)
                     })?;
-                
-                // Parse the JSON
+
+                // Parse JSON
                 let json_value: Value = serde_json::from_str(&file_content)
                     .map_err(|e| {
                         format!("Failed to parse JSON from {}: {}", file_path.display(), e)
                     })?;
-                
+
                 info!("✅ Loaded workflow: {}", filename);
                 workflows.insert(filename, json_value);
             }
         }
-        
+
         info!("📦 Successfully loaded {} workflow(s)", workflows.len());
         Ok(workflows)
     }
@@ -123,31 +127,36 @@ impl WorkflowsLoader {
 
 use crate::proxy::{ProxyState, ProxyError, handle_request_error, handle_timeout_error};
 
-/// Handles OpenAI API image generation requests and proxies them to ComfyUI
+// =================================================================================
+//  Section: Request Handling (Main Logic)
+// =================================================================================
+
+/// Handles OpenAI image generation requests and proxies them to ComfyUI
 ///
-/// This is the main entry point for image generation requests from clients.
-/// It:
-/// 1. Reads the OpenAI format request
-/// 2. Translates it to ComfyUI format
-/// 3. Sends it to the backend
-/// 4. Waits for job completion via WebSocket
-/// 5. Retrieves and encodes generated images
-/// 6. Returns them in OpenAI API format
+/// This is the core logic entry point for image generation. The flow is as follows:
+/// 1. Read the OpenAI format request body.
+/// 2. Convert it to ComfyUI prompt format (injecting parameters into the workflow).
+/// 3. Send the task to the backend (`/prompt`).
+/// 4. Wait for task completion via WebSocket.
+/// 5. Retrieve the generated images and encode them as Base64.
+/// 6. Return the response in OpenAI format.
 pub async fn generations_response(
     State(state): State<Arc<ProxyState>>,
     Query(params): Query<HashMap<String, String>>,
     headers: HeaderMap,
     body: Body,
+    req_id: &str,
 ) -> Result<AxumResponse, ProxyError> {
 
-    // Construct the backend ComfyUI URL for prompt submission
+    // Construct backend ComfyUI prompt submission URL
     let target_base: String = format!("{}:{}", state.backend_url, state.backend_port);
     let method = Method::POST;
     let target_url: String = format!("http://{}/prompt", target_base);
 
-    debug!("🎯 Proxying {} / -> {}", method, target_url);
+    info!("┃ [STEP 1/5] 📥 Processing Request [{}]", req_id);
+    debug!("┃ [{}] 🎯 Proxying {} / -> {}", req_id, method, target_url);
 
-    // Build query string from parameters (rarely used but preserved for compatibility)
+    // Construct query string (rarely used, kept for compatibility)
     let query_string = if params.is_empty() {
         String::new()
     } else {
@@ -165,12 +174,10 @@ pub async fn generations_response(
     };
     let full_url = format!("{}{}", target_url, query_string);
 
-    // Read the request body up to the configured maximum size
-    debug!("📥 Reading request body...");
+    // Read request body, limiting max size
     let body_bytes = match axum::body::to_bytes(body, state.max_payload_size_mb * 1024 * 1024).await
     {
         Ok(bytes) => {
-            debug!("✅ Body read successfully: {} bytes", bytes.len());
             bytes
         }
         Err(e) => {
@@ -184,20 +191,21 @@ pub async fn generations_response(
 
     // Transform OpenAI API request format to ComfyUI format
     let processed_body = if !body_bytes.is_empty() {
-        debug!("🔧 Generating comfyui request body...");
+        debug!("┃ [{}] 🔧 Generating comfyui request body...", req_id);
         match create_json_payload(
             body_bytes,
             state.workflows.clone(),
             state.backend_client_id.clone(),
+            req_id,
         )
         .await
         {
             Ok(modified) => {
-                debug!("✅ Body modified successfully");
+                debug!("┃ [{}] ✅ Body modified successfully", req_id);
                 modified
             }
             Err(e) => {
-                warn!("❌ Failed to modify body: {:?}", e);
+                warn!("┃ [{}] ❌ Failed to modify body: {:?}", req_id, e);
                 return Err(e);
             }
         }
@@ -205,11 +213,10 @@ pub async fn generations_response(
         body_bytes
     };
 
-    // Prepare HTTP headers for the backend request
-    debug!("📋 Preparing headers...");
+    // Prepare HTTP Headers for the backend
     let mut upstream_headers = reqwest::header::HeaderMap::new();
 
-    // Set content-type for JSON payload
+    // Set Content-Type for JSON payload
     if !processed_body.is_empty() {
         upstream_headers.insert(
             reqwest::header::CONTENT_TYPE,
@@ -217,22 +224,14 @@ pub async fn generations_response(
         );
     }
 
-    // Forward authorization headers if present
+    // Forward Authorization headers if present
     if let Some(auth) = headers.get("authorization") {
         if let Ok(auth_value) = reqwest::header::HeaderValue::from_bytes(auth.as_bytes()) {
             upstream_headers.insert(reqwest::header::AUTHORIZATION, auth_value);
         }
     }
 
-    // Log headers for debugging
-    debug!("📋 Headers to send:");
-    for (name, value) in upstream_headers.iter() {
-        debug!("   {}: {}", name, value.to_str().unwrap_or("[unprintable]"));
-    }
-    debug!("🚀 Making upstream request...");
-    debug!("   URL: {}", full_url);
-    debug!("   Method: {}", method);
-    debug!("   Body size: {} bytes", processed_body.len());
+    debug!("┃ [{}] 🚀 Requesting ComfyUI /prompt ({} bytes)", req_id, processed_body.len());
 
     // Build the request to the backend
     let request_builder = state
@@ -241,22 +240,16 @@ pub async fn generations_response(
         .headers(upstream_headers)
         .body(processed_body);
 
-    debug!("⏳ Sending request to backend...");
-
-    // Send request with timeout protection
+    // Send request (with timeout protection)
     let request_future = request_builder.send();
     let timeout_duration = Duration::from_secs(state.timeout);
 
-    debug!(
-        "⏰ Starting request with {} second timeout...",
-        timeout_duration.as_secs()
-    );
-
-    // Execute request with timeout
+    // Execute request
     let upstream_response = match tokio::time::timeout(timeout_duration, request_future).await {
         Ok(Ok(response)) => {
             debug!(
-                "✅ Got response from backend: {} - Headers: {:?}",
+                "┃ [{}] ✅ Got response from backend: {} - Headers: {:?}",
+                req_id,
                 response.status(),
                 response.headers()
             );
@@ -270,7 +263,7 @@ pub async fn generations_response(
         }
     };
 
-    // Detect response type (streaming responses are not yet supported)
+    // Detect response type (Streaming not yet supported)
     let _is_streaming = upstream_response
         .headers()
         .get("content-type")
@@ -282,70 +275,75 @@ pub async fn generations_response(
         })
         .unwrap_or(false);
 
-    // Handle the response from ComfyUI
+    // Handle ComfyUI response
     handle_regular_response(
         upstream_response,
-        target_base, 
+        target_base,
         headers,
         state.use_ws,
         &state.client,
         &state.ws_manager,
+        req_id,
     )
     .await
 }
 
 
+// =================================================================================
+//  Section: Payload Transformation
+// =================================================================================
 
-/// Transforms an OpenAI API request into a ComfyUI prompt request
+/// Transforms OpenAI API request into ComfyUI prompt request
 ///
-/// This function performs the critical translation layer between the OpenAI image
-/// generation API format and ComfyUI's workflow format.
+/// This function executes the key translation layer between OpenAI image generation specs
+/// and ComfyUI workflows.
 ///
-/// Mapping:
-/// - `model` -> workflow name (used to look up workflow JSON)
-/// - `prompt` -> positive prompt text for image generation
-/// - `negative_prompt` -> negative prompt for image generation
-/// - `seed` -> seed for image generation
-/// - `size` -> image dimensions (e.g., "1024x1024" -> width/height)
-/// - `n` -> batch_size (number of images to generate)
-/// 
+/// # Mapping Logic
+/// - `model` (OpenAI) -> Workflow Name (ComfyUI) - Used to look up specific workflow JSON
+/// - `prompt` (OpenAI) -> Positive Prompt (ComfyUI node input)
+/// - `negative_prompt` (OpenAI Extension) -> Negative Prompt
+/// - `seed` (OpenAI) -> Random Seed (KSampler node)
+/// - `size` (OpenAI) -> Image Size (EmptyLatentImage node)
+/// - `n` (OpenAI) -> Batch Size / Number of images
 ///
 /// # Arguments
-/// * `body` - Raw request body from OpenAI API call
-/// * `workflows` - Map of available ComfyUI workflows definitions
-/// * `client_id` - Client ID for WebSocket tracking
+/// * `body` - Original request body from OpenAI API call (Bytes)
+/// * `workflows` - Map of available ComfyUI workflow definitions
+/// * `client_id` - Client ID used for WebSocket pairing
 ///
 /// # Returns
-/// - Serialized ComfyUI prompt JSON ready for backend submission
-/// - ProxyError if validation or transformation fails
+/// - Serialized ComfyUI prompt JSON (Bytes), ready to be submitted to backend
+/// - `ProxyError`: If validation fails or transformation errors occur
 async fn create_json_payload(
     body: Bytes,
     workflows: Arc<HashMap<String, Value>>,
     client_id: String,
+    req_id: &str,
 ) -> Result<Bytes, ProxyError> {
-    // Early exit for empty requests
+    // Return empty if body is empty
     if body.is_empty() {
         return Ok(body);
     }
     let mut rng = rand::rng();
 
-    // Parse incoming OpenAI format request as JSON
+    // Parse input OpenAI format JSON
     let json: Value = serde_json::from_slice(&body)
         .map_err(|e| ProxyError::Json(format!("Failed to parse JSON: {}", e)))?;
 
-    // Initialize ComfyUI request structure with placeholder values
+    // Initialize ComfyUI request structure
     let mut workflow_use = serde_json::json!({
             "prompt": "",
             "client_id": ""
         });
 
-    // Process the OpenAI request
+    // Process OpenAI request fields
     if let Some(openai_request) = json.as_object() {
-        // Extract and validate the model/workflow name
+        // Extract and validate model/workflow name
         if let Some(model_name) = openai_request.get("model").and_then(|v| v.as_str()) {
             if let Some(workflow) = workflows.get(model_name) {
-                debug!("📦 Retrieved workflow '{}'", model_name);
-                // Use the selected workflow as the base prompt
+                // debug!("┃ [{}] 📦 Retrieved workflow '{}'", req_id, model_name); // Reduce noise
+                info!("┃ [STEP 2/5] 🧩 Loading Workflow: '{}'", model_name);
+                // Use selected workflow as the base prompt graph
                 workflow_use["prompt"] = workflow.clone();
             } else {
                 return Err(ProxyError::Json(format!("Workflow '{}' not found", model_name)));
@@ -354,88 +352,91 @@ async fn create_json_payload(
             return Err(ProxyError::Json(format!("Failed to get model name from JSON")));
         }
 
-        // Modify the prompt with request-specific parameters
+        // Modify parameters in the workflow
         if let Some(obj) = workflow_use.as_object_mut() {
-            // Set the client ID for WebSocket tracking
+            // Set Client ID for WebSocket pairing
             obj.insert(
                 "client_id".to_string(),
                 Value::String(client_id.clone()),
             );
 
-            // Modify workflow nodes to inject parameters from OpenAI request
+            // Iterate and modify workflow nodes, injecting OpenAI request parameters
             if let Some(workflow_prompt) = workflow_use.get_mut("prompt").and_then(|v| v.as_object_mut()){
                 for (_node_id, node_data) in workflow_prompt {
-                    if let Some(class_type) = node_data["class_type"].as_str() {
-                        match class_type {
-                            // Handle seed
-                            "KSampler" => {
+                    if let Some(class_type_ref) = node_data["class_type"].as_str() {
+                        let class_type = class_type_ref.to_string();
+                        match class_type.as_str() {
+                            // Handle Random Seed (Schema: KSampler)
+                            "KSampler" | "easy seed" => {
                                 if let Some(inputs_data_sampler) = node_data["inputs"].as_object_mut() {
-                                    // Parse seed
+                                    // Inject Seed
                                     if let Some(seed_data) = openai_request.get("seed").and_then(|v| v.as_i64()) {
-                                        debug!("✏️ Requested seed: {}", seed_data);
-
+                                        debug!("┃ [{}] ✏️ Requested seed: {}", req_id, seed_data);
                                         inputs_data_sampler.insert(
                                             "seed".to_string(),
-                                            Value::String(seed_data.to_string()),
+                                            serde_json::json!(seed_data),
                                         );
-
                                     } else {
-                                        let random_number: u32 = rng.random_range(0..1_000_000);
-                                        debug!("No seed in JSON, using random seed: {}", random_number);
+                                        // Generate random seed if not requested
+                                        let random_number: u64 = rng.random_range(0..1_000_000_000);
+                                        debug!("┃ [{}] No seed in JSON, using random seed: {}", req_id, random_number);
                                         inputs_data_sampler.insert(
                                             "seed".to_string(),
-                                            Value::String(random_number.to_string()),
+                                            serde_json::json!(random_number),
                                         );
                                     }
-                                }   
+                                }
                             }
-                            // Handle image generation size and batch size
-                            "EmptyLatentImage" | "EmptySD3LatentImage" => {
+                            // Handle Image Size and Batch Size
+                            "EmptyLatentImage" | "EmptySD3LatentImage" | "EmptyFlux2LatentImage" => {
                                 if let Some(inputs_data_size) = node_data["inputs"].as_object_mut() {
-                                    // Parse and set image dimensions
+                                    // Parse and set image size (Format: WIDTHxHEIGHT)
                                     if let Some(size_data) = openai_request.get("size").and_then(|v| v.as_str()) {
-                                        debug!("✏️ Requested image size: {}", size_data);
-                                        // Parse "1024x1024" format to width and height
-                                        let size_data_split: Vec<i32> = size_data.split('x')
+                                        debug!("┃ [{}] ✏️ Requested image size: {}", req_id, size_data);
+                                        let size_data_split: Vec<i64> = size_data.split('x')
                                             .map(|p| p.parse().unwrap_or(512))
                                             .collect();
 
                                         inputs_data_size.insert(
                                             "width".to_string(),
-                                            Value::String(size_data_split.get(0).unwrap_or(&512).to_string()),
+                                            serde_json::json!(size_data_split.get(0).unwrap_or(&1024).clone()),
                                         );
                                         inputs_data_size.insert(
                                             "height".to_string(),
-                                            Value::String(size_data_split.get(1).unwrap_or(&512).to_string()),
+                                            serde_json::json!(size_data_split.get(1).unwrap_or(&1024).clone()),
                                         );
-                                    } else {
-                                        return Err(ProxyError::Json(format!("Failed to get size from JSON")));
                                     }
 
-                                    // Set batch size (number of images to generate)
+                                    // Set batch_size (number of images)
                                     if let Some(copies_num_data) = openai_request.get("n").and_then(|v| v.as_i64()) {
-                                        debug!("✏️ Requested copies: {}", copies_num_data);
+                                        debug!("┃ [{}] ✏️ Requested n (batch_size): {}", req_id, copies_num_data);
                                         inputs_data_size.insert(
                                             "batch_size".to_string(),
-                                            Value::String(copies_num_data.to_string()),
+                                            serde_json::json!(copies_num_data),
                                         );
-                                    } else {
-                                        debug!("No 'n' (copies) in JSON, using workflow default");
                                     }
-                                }   
+                                }
                             }
-                            // Handle text prompts for image generation
-                            "CLIPTextEncode" => {
-                                // Check if this is a positive or negative prompt node
+                            // Handle Text Prompts
+                            "CLIPTextEncode" | "CR Text" | "easy promptLine" => {
+                                // Check if it's Positive or Negative prompt node
                                 if let Some(meta_data) = node_data["_meta"].as_object() {
                                     if let Some(title) = meta_data["title"].as_str() {
-                                        // Inject positive prompt
-                                        if title == "Positive Prompt" { 
+                                        // Inject Positive Prompt
+                                        // Matches common node titles for positive prompts (English & Chinese)
+                                        if title == "Positive Prompt" || title == "CLIP文本编码" || title == "🔤 CR Text" || title == "提示词行" {
                                             if let Some(inputs_data) = node_data["inputs"].as_object_mut() {
                                                 if let Some(prompt_input) = openai_request.get("prompt").and_then(|v| v.as_str()) {
-                                                    debug!("✏️ Requested prompt: {}", prompt_input);
+                                                    debug!("┃ [{}] ✏️ Requested prompt: {}", req_id, prompt_input);
+
+                                                    // Determine field name based on class_type
+                                                    let key = match class_type.as_str() {
+                                                        "easy promptLine" => "prompt",
+                                                        _ => "text",
+                                                    };
+
                                                     inputs_data.insert(
-                                                        "text".to_string(),
+                                                        key.to_string(),
                                                         Value::String(prompt_input.to_string()),
                                                     );
                                                 } else {
@@ -443,24 +444,25 @@ async fn create_json_payload(
                                                 }
                                             }
                                         }
-                                        // Inject negative prompt (optional)
-                                        else if title == "Negative Prompt" {
+                                        // Inject Negative Prompt (Optional)
+                                        // Matches common node titles for negative prompts
+                                        else if title == "Negative Prompt" || title == "条件零化" {
                                             if let Some(inputs_data) = node_data["inputs"].as_object_mut() {
                                                 if let Some(neg_prompt_input) = openai_request.get("negative_prompt").and_then(|v| v.as_str()) {
-                                                    debug!("✏️ Requested negative prompt: {}", neg_prompt_input);
+                                                    debug!("┃ [{}] ✏️ Requested negative prompt: {}", req_id, neg_prompt_input);
                                                     inputs_data.insert(
                                                         "text".to_string(),
                                                         Value::String(neg_prompt_input.to_string()),
                                                     );
                                                 } else {
-                                                    debug!("No negative_prompt in JSON, using workflow default");
+                                                    debug!("┃ [{}] No negative_prompt in JSON, using workflow default", req_id);
                                                 }
                                             }
                                         }
                                     }
                                 }
                             }
-                            // Skip other node types
+                            // Skip irrelevant nodes
                             _ => {
                                 continue
                             }
@@ -470,36 +472,41 @@ async fn create_json_payload(
             }
         }
 
-        debug!("🔧 Generated JSON payload");
+        // info!("┃ [{}] 🔧 JSON payload generated", req_id);
     }
 
-    // Serialize the modified ComfyUI prompt to JSON bytes
+    // Serialize modified ComfyUI prompt to JSON bytes
     let modified_json = serde_json::to_vec(&workflow_use)
         .map_err(|e| ProxyError::Json(format!("Failed to serialize JSON: {}", e)))?;
 
     Ok(Bytes::from(modified_json))
 }
 
+// =================================================================================
+//  Section: Response Handling & Image Retrieval
+// =================================================================================
+
 /// Handles the response from ComfyUI backend
 ///
 /// This function:
-/// 1. Extracts the prompt_id from the backend response
-/// 2. Waits for job completion via WebSocket
-/// 3. Retrieves generated images from the backend
-/// 4. Encodes images as base64
-/// 5. Returns response in OpenAI API format
+/// 1. Extracts the `prompt_id` from the backend response.
+/// 2. Waits for job completion via WebSocket.
+/// 3. Retrieves generated images from the backend.
+/// 4. Encodes images as base64.
+/// 5. Returns response in OpenAI API format.
 async fn handle_regular_response(
     upstream_response: reqwest::Response,
-    target_base: String, 
+    target_base: String,
     _headers: HeaderMap,
     use_ws: bool,
     client: &Client,
     ws_manager: &Option<Arc<WebSocketManager>>,
+    req_id: &str,
 ) -> Result<AxumResponse, ProxyError> {
     let status = upstream_response.status();
     let headers = upstream_response.headers().clone();
 
-    debug!("📄 Handling regular response with status: {}", status);
+    debug!("┃ [{}] 📄 Handling regular response with status: {}", req_id, status);
 
     // Read response body from backend
     let body_bytes = upstream_response
@@ -507,14 +514,15 @@ async fn handle_regular_response(
         .await
         .map_err(|e| ProxyError::Upstream(format!("Failed to read response body: {}", e)))?;
 
-    debug!("📥 Response body: {} bytes", body_bytes.len());
+    debug!("┃ [{}] 📥 Response body: {} bytes", req_id, body_bytes.len());
 
     // Parse backend response as JSON
     let json: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Json(format!("Failed to parse JSON: {}", e)))?;
 
     debug!(
-            "📝 Received response: {}",
+            "┃ [{}] 📝 Received response: {}",
+            req_id,
             json.to_string()
         );
 
@@ -522,36 +530,39 @@ async fn handle_regular_response(
     let prompt_id = json.get("prompt_id").and_then(|v| v.as_str());
     if let Some(pid) = prompt_id {
         debug!(
-            "📝 Found prompt_id in response: {}. Waiting for job completion...",
+            "┃ [{}] 📝 Found prompt_id in response: {}. Waiting for job completion...",
+            req_id,
             pid
         );
+        info!("┃ [STEP 3/5] ⏳ Waiting for Job Completion (ID: {})", pid);
 
-        // // Block until the job completes via WebSocket
+        // Block until the job completes via WebSocket
         if use_ws {
             if let Some(manager) = ws_manager {
                 match timeout(Duration::from_secs(600), manager.wait_for_job_completion(pid)).await {
                     Ok(Ok(())) => {},
-                    Ok(Err(e)) => warn!("⚠️ Failed to wait for job completion: {}", e),
-                    Err(_) => warn!("⚠️ Job completion wait timed out after 600 seconds"),
+                    Ok(Err(e)) => warn!("┃ [{}] ⚠️ Failed to wait for job completion: {}", req_id, e),
+                    Err(_) => warn!("┃ [{}] ⚠️ Job completion wait timed out after 600 seconds", req_id),
                 }
             } else {
-                warn!("⚠️ WebSocket manager is not initialized but use_ws is true");
+                warn!("┃ [{}] ⚠️ WebSocket manager is not initialized but use_ws is true", req_id);
             }
         } else {
             loop {
-                // Fetch generated images from ComfyUI backend and prepare response
+                // Poll the queue until the job is finished (not in queue)
                 let is_done = check_queue(
                     target_base.clone(),
                     Some(pid),
                     headers.clone(),
                     client,
+                    req_id,
                 )
                 .await?;
 
                 if is_done {
-                    debug!("⚡ Job {} completed (not found in queue)", pid);
+                    debug!("┃ [{}] ⚡ Job {} completed (not found in queue)", req_id, pid);
                     break
-                } 
+                }
 
                 tokio::time::sleep(Duration::from_millis(2000)).await;
             }
@@ -564,17 +575,17 @@ async fn handle_regular_response(
         prompt_id,
         headers.clone(),
         client,
+        req_id,
     )
     .await?;
-
-
 
     // Serialize the image response JSON to bytes
     let output_json = serde_json::to_vec(&image_response_json)
         .map_err(|e| ProxyError::Json(format!("Failed to serialize JSON: {}", e)))?;
     let output_body_bytes = Bytes::from(output_json);
     debug!(
-        "✏️ JSON regular response: {} bytes",
+        "┃ [{}] ✏️ JSON regular response: {} bytes",
+        req_id,
         output_body_bytes.len()
     );
 
@@ -605,7 +616,7 @@ async fn handle_regular_response(
         response = response.header(name, value);
     }
 
-    debug!("✅ Regular response built successfully");
+    debug!("┃ [{}] ✅ Regular response built successfully", req_id);
 
     response
         .body(Body::from(output_body_bytes))
@@ -615,11 +626,11 @@ async fn handle_regular_response(
 /// Retrieves generated images from ComfyUI backend
 ///
 /// This function:
-/// 1. Queries the ComfyUI history endpoint for the given prompt_id
-/// 2. Extracts image metadata from the job outputs
-/// 3. Downloads each image from the view endpoint
-/// 4. Base64 encodes the images
-/// 5. Formats the response in OpenAI API standards
+/// 1. Queries the ComfyUI history endpoint for the given prompt_id.
+/// 2. Extracts image metadata from the job outputs.
+/// 3. Downloads each image from the view endpoint.
+/// 4. Base64 encodes the images.
+/// 5. Formats the response in OpenAI API standards.
 ///
 /// # Arguments
 /// * `target_base` - ComfyUI backend address (host:port)
@@ -628,13 +639,14 @@ async fn handle_regular_response(
 /// * `client` - HTTP client for backend communication
 ///
 /// # Returns
-/// - JSON response in OpenAI image generation format with base64 encoded images
-/// - ProxyError if history lookup or image retrieval fails
+/// - JSON response in OpenAI image generation format with base64 encoded images.
+/// - `ProxyError` if history lookup or image retrieval fails.
 async fn retrieve_image_from_history(
     target_base: String,
     prompt_id: Option<&str>,
     headers: HeaderMap,
     client: &Client,
+    req_id: &str,
 ) -> Result<Value, ProxyError> {
 
     // Validate that we have a prompt_id
@@ -651,7 +663,8 @@ async fn retrieve_image_from_history(
     // Construct URL to ComfyUI history endpoint
     let history_url: String = format!("http://{}/history/{}", target_base, prompt_id);
 
-    debug!("🔍 Checking history at {} for {}", target_base, prompt_id);
+    info!("┃ [STEP 4/5] 🔍 Checking History/Validation (ID: {})", prompt_id);
+    debug!("┃ [{}] 🔍 Checking history at {} for {}", req_id, target_base, prompt_id);
 
     // Prepare headers for backend requests
     let mut upstream_headers = reqwest::header::HeaderMap::new();
@@ -663,19 +676,11 @@ async fn retrieve_image_from_history(
         }
     }
 
-    // Log headers for debugging
-    debug!("📋 Headers to send (if any):");
-    for (name, value) in upstream_headers.iter() {
-        debug!("   {}: {}", name, value.to_str().unwrap_or("[unprintable]"));
-    }
-    
     // Build request to history endpoint
     let request_builder = client
         .request(Method::GET, &history_url)
         .headers(upstream_headers.clone());
 
-    debug!("⏳ Sending history request to backend...");
-    
     // Query history with timeout protection
     let request_future = request_builder.send();
     let timeout_duration = Duration::from_secs(5);
@@ -683,7 +688,8 @@ async fn retrieve_image_from_history(
     let upstream_response = match tokio::time::timeout(timeout_duration, request_future).await {
         Ok(Ok(response)) => {
             debug!(
-                "✅ Got response from history backend: {} - Headers: {:?}",
+                "┃ [{}] ✅ Got response from history backend: {} - Headers: {:?}",
+                req_id,
                 response.status(),
                 response.headers()
             );
@@ -720,14 +726,13 @@ async fn retrieve_image_from_history(
                             // Only include output images (not temporary/preview)
                             if type_field == "output" {
                                 if let Some(filename) = image_data["filename"].as_str() {
-                                    if let Some(subfolder) = image_data["subfolder"].as_str() {
-                                        debug!("🔍 Found: filename: {}, subfolder: {}", filename, subfolder);
-                                        image_files.push(ImageFile {
-                                            filename: filename.to_string(),
-                                            subfolder: subfolder.to_string(),
-                                            type_field: type_field.to_string()
-                                        });
-                                    }
+                                    let subfolder = image_data["subfolder"].as_str().unwrap_or("");
+                                    debug!("┃ [{}] Found image: {} (subfolder: {})", req_id, filename, subfolder);
+                                    image_files.push(ImageFile {
+                                        filename: filename.to_string(),
+                                        subfolder: subfolder.to_string(),
+                                        type_field: type_field.to_string()
+                                    });
                                 }
                             }
                         }
@@ -736,16 +741,17 @@ async fn retrieve_image_from_history(
             }
         }
     } else {
-        error!("⚠️ No prompt_id history found");
+        error!("┃ [{}] ⚠️ No prompt_id history found", req_id);
         return Err(ProxyError::Upstream(format!(
                 "No prompt_id history found.",
             )));
     }
 
-    debug!("📦 Collected {} image files", image_files.len());
+    debug!("┃ [{}] 📦 Collected {} image files", req_id, image_files.len());
     let mut response_data: Vec<serde_json::Value> = Vec::new();
-    
+
     // Download and encode each generated image
+    info!("┃ [STEP 5/5] ⬇️  Retrieving & Encoding Images");
     for image_file_data in image_files {
         // Construct query parameters for the view endpoint
         let view_query = serde_urlencoded::to_string(&image_file_data).
@@ -758,8 +764,8 @@ async fn retrieve_image_from_history(
             .request(Method::GET, &view_url)
             .headers(upstream_headers.clone());
 
-        debug!("⏳ Sending view request to backend: {}", view_query);
-        
+        debug!("┃ [{}] ⏳ Sending view request to backend: {}", req_id, view_query);
+
         // Download image with timeout
         let request_future = request_builder.send();
         let timeout_duration = Duration::from_secs(5);
@@ -767,7 +773,8 @@ async fn retrieve_image_from_history(
         let view_response = match tokio::time::timeout(timeout_duration, request_future).await {
             Ok(Ok(response)) => {
                 debug!(
-                    "✅ Got response from view backend: {} - Headers: {:?}",
+                    "┃ [{}] ✅ Got response from view backend: {} - Headers: {:?}",
+                    req_id,
                     response.status(),
                     response.headers()
                 );
@@ -783,7 +790,7 @@ async fn retrieve_image_from_history(
 
         // Read image bytes and encode as base64
         let image_bytes = view_response.bytes().await?;
-        debug!("📋 Read {} image bytes", image_bytes.len());
+        debug!("┃ [{}] 📋 Read {} image bytes", req_id, image_bytes.len());
         let b64_image = general_purpose::STANDARD.encode(image_bytes);
         response_data.push(serde_json::json!({
             "b64_json": b64_image
@@ -803,29 +810,32 @@ async fn retrieve_image_from_history(
 
 }
 
-
+// =================================================================================
+//  Section: Queue Management
+// =================================================================================
 
 /// Checks a job state from ComfyUI backend
 ///
 /// This function:
-/// 1. Queries the ComfyUI queue endpoint for the given prompt_id
-/// 2. Looks for the given job ID in both queues (pending y running)
-/// 3. Returns true if not found
+/// 1. Queries the ComfyUI queue endpoint for the given prompt_id.
+/// 2. Looks for the given job ID in both queues (pending and running).
+/// 3. Returns true if not found (implying the job is finished).
 ///
 /// # Arguments
 /// * `target_base` - ComfyUI backend address (host:port)
-/// * `prompt_id` - The job ID to retrieve results for
+/// * `prompt_id` - The job ID to check
 /// * `headers` - Original request headers (may contain auth)
 /// * `client` - HTTP client for backend communication
 ///
 /// # Returns
-/// - True if the given job id is not in the queues and hence finished
-/// - ProxyError if history lookup or image retrieval fails
+/// - `true` if the given job id is NOT in the queues (hence finished).
+/// - `ProxyError` if queue lookup fails.
 async fn check_queue(
     target_base: String,
     prompt_id: Option<&str>,
     headers: HeaderMap,
     client: &Client,
+    req_id: &str,
 ) -> Result<bool, ProxyError> {
 
     // Validate that we have a prompt_id
@@ -842,7 +852,7 @@ async fn check_queue(
     // Construct URL to ComfyUI history endpoint
     let history_url: String = format!("http://{}/queue", target_base);
 
-    debug!("🔍 Checking queue at {}", target_base);
+    debug!("┃ [{}] 🔍 Checking queue at {}", req_id, target_base);
 
     // Prepare headers for backend requests
     let mut upstream_headers = reqwest::header::HeaderMap::new();
@@ -855,18 +865,18 @@ async fn check_queue(
     }
 
     // Log headers for debugging
-    debug!("📋 Headers to send (if any):");
+    debug!("┃ [{}] 📋 Headers to send (if any):", req_id);
     for (name, value) in upstream_headers.iter() {
-        debug!("   {}: {}", name, value.to_str().unwrap_or("[unprintable]"));
+        debug!("┃ [{}]    {}: {}", req_id, name, value.to_str().unwrap_or("[unprintable]"));
     }
-    
+
     // Build request to history endpoint
     let request_builder = client
         .request(Method::GET, &history_url)
         .headers(upstream_headers.clone());
 
-    debug!("⏳ Sending queue request to backend...");
-    
+    debug!("┃ [{}] ⏳ Sending queue request to backend...", req_id);
+
     // Query history with timeout protection
     let request_future = request_builder.send();
     let timeout_duration = Duration::from_secs(5);
@@ -874,7 +884,8 @@ async fn check_queue(
     let upstream_response = match tokio::time::timeout(timeout_duration, request_future).await {
         Ok(Ok(response)) => {
             debug!(
-                "✅ Got response from queue backend: {} - Headers: {:?}",
+                "┃ [{}] ✅ Got response from queue backend: {} - Headers: {:?}",
+                req_id,
                 response.status(),
                 response.headers()
             );
@@ -892,11 +903,11 @@ async fn check_queue(
     let response_body = upstream_response
         .bytes()
         .await
-        .map_err(|e| ProxyError::Upstream(format!("Failed to read queu response body: {}", e)))?;
+        .map_err(|e| ProxyError::Upstream(format!("Failed to read queue response body: {}", e)))?;
     let queu_json: Value = serde_json::from_slice(&response_body)
-        .map_err(|e| ProxyError::Json(format!("Failed to queu history JSON: {}", e)))?;
+        .map_err(|e| ProxyError::Json(format!("Failed to parse queue JSON: {}", e)))?;
 
-    // Check running
+    // Check running queue
     if let Some(queue_running) = queu_json.get("queue_running").and_then(|v| v.as_array()){
 
         for queue_elem in queue_running.iter() {
@@ -905,7 +916,7 @@ async fn check_queue(
             }
         }
     }
-    // Check pending
+    // Check pending queue
     if let Some(queue_pending) = queu_json.get("queue_pending").and_then(|v| v.as_array()){
         for queue_elem in queue_pending.iter() {
             if queue_elem[1] == prompt_id {

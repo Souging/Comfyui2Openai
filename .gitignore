@@ -1,4 +1,24 @@
-untracked
-.venv
-.vscode
+# IDEs and Tools
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Rust
+**/target/
+**/*.rs.bk
+
+# Configuration and Secrets
+apps/api/config/config.yaml
 .env
+.env.*
+
+# Logs
+*.log
+logs/
+
+# Optional: User workflows
+# If you want to keep workflows private, uncomment the next line
+# workflows/*.json

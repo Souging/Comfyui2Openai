@@ -1,341 +1,147 @@
-![ever growing...](./assets/banner.png)
+# ComfyUI OpenAI API Proxy (Rust)
 
-# ComfyUI OpenAI API Proxy
+[🇨🇳 中文文档 (Chinese README)](README_CN.md)
 
-A high-performance reverse proxy that translates OpenAI image generation API calls into ComfyUI backend requests. This enables clients to use the standard OpenAI API while leveraging ComfyUI's powerful workflow engine for image generation.
+A high-performance, asynchronous proxy server written in Rust that exposes an OpenAI-compatible API (`/v1/images/generations`) for your local or remote ComfyUI instance.
 
-## Overview
+This allows you to use ComfyUI's powerful image generation workflows with any client that supports the OpenAI DALL-E API (e.g., ChatGPT web UIs, Open WebUI, LangChain, etc.).
 
-This proxy serves as a bridge between OpenAI API-compatible clients and ComfyUI. It:
+## 🚀 Features
 
-- **Accepts** standard OpenAI image generation requests (`POST /v1/images/generations`)
-- **Translates** OpenAI parameters to ComfyUI workflow format
-- **Manages** job execution via persistent WebSocket connection
-- **Retrieves** generated images from ComfyUI backend
-- **Returns** responses in OpenAI API format (base64-encoded images)
+- **OpenAI Compatible**: Drop-in replacement for the `v1/images/generations` endpoint.
+- **WebSocket Support**: Real-time task tracking via ComfyUI's WebSocket connection.
+- **Dynamic Workflow Mapping**: specific `model` names in API requests map directly to JSON workflow files.
+- **Parameter Injection**: Automatically injects prompts, negative prompts, seeds, and dimensions into your ComfyUI workflows.
+- **High Performance**: Built with Rust, Axum, and Tokio for low latency and high concurrency.
 
-## Architecture
+## 🛠️ Prerequisites
 
-### Components
+- **Rust**: Ensure you have Rust and Cargo installed ([Install Rust](https://www.rust-lang.org/tools/install)).
+- **ComfyUI**: A running instance of ComfyUI (local or remote).
 
-- **HTTP Server** (Axum): Handles incoming OpenAI API requests with CORS support
-- **HTTP Client** (Reqwest): Communicates with ComfyUI backend for workflow execution
-- **WebSocket Manager**: Persistent connection to ComfyUI for job tracking
-- **Workflow Loader**: Manages ComfyUI workflow definitions
-- **Request Translator**: Converts OpenAI format to ComfyUI format
+## ⚙️ Configuration
 
-### Request Flow
+1. **Config File**:
+   Ensure `apps/api/config/config.yaml` exists. You can customize the server port and ComfyUI backend address here.
+
+   ```yaml
+   log_level: info
+
+   server:
+     host: "0.0.0.0"
+     port: 8080        # The port this proxy will listen on
+
+   comfyui_backend:
+     host: "localhost" # Your ComfyUI IP
+     port: 8188        # Your ComfyUI Port
+     client_id: "openai-proxy-v1"
+     workflows_folder: "./workflows" # Directory to store JSON workflows
+     use_ws: true      # Recommended: true for real-time status updates
+
+   routing:
+     timeout_seconds: 300
+     max_payload_size_mb: 10
+   ```
+
+2. **Environment Variable (Optional)**:
+   You can specify a custom config path via the `CONFIG_PATH` environment variable.
+
+## 📂 Workflow Setup (Important!)
+
+To use a specific model/workflow via the API, you must export it from ComfyUI in **API Format**.
+
+1. Open **ComfyUI** in your browser.
+2. Click the **Gear Icon** (Settings) and check **"Enable Dev mode Options"**.
+3. Load or create your desired workflow.
+4. Click the **"Save (API Format)"** button (do **not** use the regular "Save" button).
+5. Rename the saved JSON file to the model name you want to use (e.g., `flux-dev.json`).
+6. Place this file in the `workflows/` directory (or the folder defined in your config).
+
+**Example Mapping:**
+- If you request `model: "flux-dev"`, the proxy loads `./workflows/flux-dev.json`.
+
+### Supported Nodes for Parameter Injection
+The proxy looks for specific node types/titles to inject API parameters:
+- **Prompt**: `CLIPTextEncode`, `CR Text`, `easy promptLine` (Title: "Positive Prompt" or default).
+- **Negative Prompt**: `CLIPTextEncode` (Title: "Negative Prompt").
+- **Seed**: `KSampler`, `easy seed`.
+- **Size (WxH)**: `EmptyLatentImage`, `EmptySD3LatentImage`, `EmptyFlux2LatentImage`.
+
+### 🧩 Customizing Node Mapping
+
+If your workflow uses special custom nodes that are not automatically recognized by the default rules (e.g., complex node inputs or unique node names), you can easily modify the mapping logic yourself.
+
+The mapping logic is located in `apps/api/src/comfyui.rs` inside the `create_json_payload` function.
+
+**💡 Pro Tip**: The easiest way to adapt it is to upload your exported workflow (`.json`) and the project code (`src/comfyui.rs`) to an AI Agent (like Claude Code) and ask:
 
 ```
-Client Request (OpenAI format)
-    ↓
-[Proxy Server - HTTP Handler]
-    ↓
-[Request Translator]
-    - Extract model name → lookup workflow
-    - Extract prompt, size, batch count
-    - Transform to ComfyUI prompt format
-    ↓
-[ComfyUI Backend - /prompt endpoint]
-    Returns: { prompt_id: "..." }
-    ↓
-[WebSocket Manager - Job Tracking]
-    Waits for: { type: "executing", data: { node: null } }
-    ↓
-[Image Retrieval]
-    - Query /history/{prompt_id}
-    - Download images from /view endpoint
-    - Base64 encode images
-    ↓
-Client Response (OpenAI format)
-    { data: [ { b64_json: "..." } ], created: ... }
+"Please help me modify the mapping logic in comfyui.rs to support [your_workflow].json."
 ```
 
-## Getting Started
-
-### Prerequisites
-
-- Rust 1.70+ (for building)
-- Docker and Docker Compose (for deployment)
-- ComfyUI backend running on accessible network
-
-### Installation
-
-1. Clone the repository:
-```bash
-cd apps/rust/comfyui-openai-api
-```
-
-2. Create configuration file:
-```bash
-cp config/config.sample.yaml config/config.yaml
-```
-
-3. Edit `config/config.yaml` with your settings:
-```yaml
-log_level: debug
-server:
-  host: "0.0.0.0"
-  port: 8080
-comfyui_backend:
-  host: "comfyui"
-  port: 8188
-  client_id: "openai-proxy-client"
-  workflows_folder: "./workflows"
-routing:
-  timeout_seconds: 120
-  max_payload_size_mb: 10
-```
-
-4. Place workflow JSON files in the `workflows` folder:
-```bash
-cp ../../workflows/*.json workflows/
-```
-
-### Running
-
-#### Local Development
+## 🏃‍♂️ Running the Server
 
 ```bash
-# Build
+# Navigate to the api directory first
+cd apps/api
+
+# Run directly (development)
+cargo run
+
+# Or build release and run
 cargo build --release
 
-# Run
+# Linux/macOS:
 ./target/release/comfyui-openai-api
+
+# Windows (PowerShell):
+.\target\release\comfyui-openai-api.exe
 ```
 
-#### Docker
+The server will start at `http://0.0.0.0:8080`.
+
+## 🔌 Usage Examples
+
+### 1. CURL
 
 ```bash
-# Build image
-docker build -t comfyui-openai-api .
-
-# Run container
-docker run -p 8080:8080 \
-  -v $(pwd)/config:/app/config \
-  -v $(pwd)/workflows:/app/workflows \
-  comfyui-openai-api
-```
-
-#### Docker Compose
-
-(coming soon, currently it only launches a ComfyUI backend for testing)
-
-```bash
-docker-compose up --build
-```
-
-## Configuration
-
-### Environment Variables
-
-- `CONFIG_PATH`: Path to YAML configuration file (default: `./config/config.yaml`)
-- `RUST_LOG`: Logging level (debug, info, warn, error) - set by config file
-
-### Configuration File (config.yaml)
-
-```yaml
-# Logging level
-log_level: debug
-
-# Proxy server configuration
-server:
-  host: "0.0.0.0"        # Bind address
-  port: 8080             # Listen port
-
-# ComfyUI backend connection
-comfyui_backend:
-  host: "localhost"      # ComfyUI host
-  port: 8188             # ComfyUI port
-  client_id: "proxy"     # Unique ID for WebSocket
-  workflows_folder: "./workflows"  # Path to workflow JSONs
-
-# Request routing settings
-routing:
-  timeout_seconds: 120   # Request timeout
-  max_payload_size_mb: 10 # Max request body size
-```
-
-## API Usage
-
-### Endpoint
-
-```
-POST /v1/images/generations
-```
-
-### Request Format
-
-Compatible with OpenAI image generation API:
-
-```json
-{
-  "model": "animagine-xl-4",
-  "prompt": "1girl, cyberpunk style, astronaut suit, looking at viewer, smile, outdoors, neon city, \"PNYX\", night, v, masterpiece, high score, great score, absurdres",
-  "size": "832x1216",
-  "n": 1
-}
-```
-
-### Request Parameters
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `model` | string | Yes | Workflow name (filename without .json) |
-| `prompt` | string | Yes | Positive prompt for image generation |
-| `negative_prompt` | string | No | Negative prompt to avoid |
-| `size` | string | Yes | Image dimensions: "1024x1024", "768x768", etc. |
-| `n` | integer | No | Number of images to generate (default: 1) |
-
-### Response Format
-
-OpenAI-compatible response with base64-encoded images:
-
-```json
-{
-  "data": [
-    {
-      "b64_json": "iVBORw0KGgoAAAANSUhEUgAAAAUA..."
-    }
-  ],
-  "created": 1704067200
-}
-```
-
-### Example Requests
-
-#### cURL
-
-```bash
-curl -X POST http://localhost:8080/v1/images/generations \
+curl http://localhost:8080/v1/images/generations \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-any-token" \
   -d '{
-    "model": "animagine-xl-4",
-    "prompt": "a cat wearing a hat",
-    "size": "832x1216",
-    "n": 1
+    "model": "flux-dev",
+    "prompt": "A cyberpunk city at night, neon lights, rain",
+    "n": 1,
+    "size": "1024x1024"
   }'
 ```
 
-#### Python (with OpenAI client)
+*Note: `model` must match the filename in your `workflows` folder (without .json).*
+
+### 2. Python (OpenAI SDK)
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(
-    api_key="dummy-key",  # Not used by proxy
-    base_url="http://localhost:8080/v1"
+    base_url="http://localhost:8080/v1",
+    api_key="sk-no-key-needed"
 )
 
 response = client.images.generate(
-    model="animagine-xl-4",
-    prompt="a cat wearing a hat",
-    size="832x1216",
+    model="flux-dev",  # Matches ./workflows/flux-dev.json
+    prompt="A cute cat sitting on a windowsill, watercolor style",
+    size="1024x1024",
+    quality="standard",
     n=1,
-    response_format="b64_json"
 )
 
-print(response.data[0].b64_json)
+image_url = response.data[0].b64_json
+# Process the base64 image...
 ```
+## Reference Project
+[ComfyUI OpenAI API](https://github.com/pnyxai/comfyui-openai-api)
 
-## Workflow Management
+## 📝 License
 
-### Creating Workflows
-
-1. Create workflow in ComfyUI UI
-2. Export as JSON
-3. Place in `workflows/` folder
-4. Reference by filename (without `.json`) in API calls, using the `model` field.
-
-### Example Workflow
-
-You will find example workflows in  `./workflows`. Please download the model's weights and place them in the correct folders before trying to use them!
-
-### Node Replacement
-
-The proxy automatically modifies specific nodes:
-
-- **EmptyLatentImage / EmptySD3LatentImage**: Updates `width`, `height`, `batch_size`
-- **CLIPTextEncode (Positive Prompt)**: Updates `text` with prompt
-- **CLIPTextEncode (Negative Prompt)**: Updates `text` with negative_prompt
-
-If you workflow needs other nodes to be modified, you can open an issue!
-
-## Project Structure
-
-```
-./
-├── apps/               # Project Apps
-│   └── ...             # See below...
-├── workflows/          # Example workflows
-│   ├── animagine-xl-4.json  
-│   ├── qwen_2-5_vl_7b.json  
-│   └── ...
-├── comfyui_docker/
-│   ├── Dockerfile           # Container image definition for ComfyUI backend
-│   ├── build.sh             # Build script for ComfyUI backend image
-│   ├── .env.sample          # Sample file for backend enviroment variables needed
-│   └── docker-compose.yaml  # Multi-container setup for backend (currently)
-├── REEDME.md                # This readme!
-```
-
-
-Proxy app:
-
-```
-apps/rust/comfyui-openai-api/
-├── src/
-│   ├── main.rs          # Server setup and configuration
-│   ├── config.rs        # Configuration management
-│   ├── proxy.rs         # HTTP request routing
-│   ├── comfyui.rs       # Backend communication and translation
-│   └── ws.rs            # WebSocket job tracking
-├── config/
-│   └── config.sample.yaml  # Configuration template
-├── Dockerfile           # Container image definition
-└── build.sh             # Build script
-```
-
-## Module Documentation
-
-### main.rs
-Entry point and server initialization. Sets up the Axum HTTP server, initializes WebSocket connection, loads workflows, and configures middleware.
-
-### config.rs
-Configuration struct definitions and YAML file loading. Handles server, backend, and routing settings.
-
-### proxy.rs
-HTTP request routing and error handling. Routes `/v1/images/*` requests to appropriate handlers and converts errors to HTTP responses.
-
-### comfyui.rs
-Core translation logic. Converts OpenAI API requests to ComfyUI format, submits to backend, retrieves images, and formats responses.
-
-### ws.rs
-WebSocket management for job tracking. Maintains persistent connection to ComfyUI backend and monitors job completion via WebSocket messages.
-
-## Performance Characteristics
-
-- **Concurrency**: 8 worker threads (configurable) for handling concurrent requests
-- **Connection Pooling**: Reusable HTTP client with connection pooling
-- **Memory**: Circular buffer (100 jobs) for tracking completions prevents memory leaks
-- **Timeouts**: Configurable request timeouts (default 120s) prevent hanging connections
-- **Payload Size**: Configurable max request body size (default 10MB)
-
-## Monitoring and Debugging
-
-### Logging
-
-Set `log_level` in configuration to control verbosity:
-- `debug`: Detailed request/response information
-- `info`: General operational information
-- `warn`: Warnings and recoverable errors
-- `error`: Error conditions only
-
-## Contributing
-
-Contributions are welcome. Please follow these guidelines:
-- Add comments to all public functions and modules
-- Update documentation for user-facing changes
-- Test with various workflow configurations
-- Report bugs with reproduction steps
-
+[MIT](LICENSE)

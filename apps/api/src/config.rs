@@ -8,7 +8,7 @@ use std::env;
 use std::fs;
 
 /// Proxy server configuration
-/// 
+///
 /// Defines where the proxy server listens for incoming OpenAI API requests
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ServerConfig {
@@ -19,7 +19,7 @@ pub struct ServerConfig {
 }
 
 /// ComfyUI backend connection configuration
-/// 
+///
 /// Defines how to connect to the ComfyUI server and which workflows to use
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ComfyUiProxyConfig {
@@ -36,7 +36,7 @@ pub struct ComfyUiProxyConfig {
 }
 
 /// Request routing and timeout configuration
-/// 
+///
 /// Controls request handling behavior and limits
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RoutingConfig {
@@ -47,7 +47,7 @@ pub struct RoutingConfig {
 }
 
 /// Root configuration struct loaded from YAML
-/// 
+///
 /// Example config.yaml:
 /// ```yaml
 /// log_level: debug
@@ -77,15 +77,15 @@ pub struct Config {
 
 impl Config {
     /// Load configuration from a YAML file
-    /// 
+    ///
     /// Reads from CONFIG_PATH environment variable or defaults to "./config/config.yaml"
-    /// 
+    ///
     /// # Examples
     /// ```no_run
     /// let config = Config::load()?;
     /// println!("Server running on {}:{}", config.server.host, config.server.port);
     /// ```
-    /// 
+    ///
     /// # Errors
     /// Returns an error if:
     /// - The configuration file cannot be read

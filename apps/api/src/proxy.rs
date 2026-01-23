@@ -194,19 +194,47 @@ pub async fn proxy_handler(
     body: Body,
 ) -> Result<AxumResponse, ProxyError> {
 
+    // Generate a short ID for tracking this request
+    let req_id = uuid::Uuid::new_v4().to_string().chars().take(8).collect::<String>();
+    
+    // Log request start with visual separator
+    log::info!("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓");
+    log::info!("┃ 🚀 REQUEST START [{}]", req_id);
+    log::info!("┃ 📍 Path: /v1/images/{}", path);
+    log::info!("┃ 🔗 Method: POST"); // We only really handle POST for generations
+    log::info!("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛");
+
     // Route based on the requested endpoint
-    match path.as_str()  {
+    let result = match path.as_str()  {
         // Handle OpenAI image generation API equivalent
         "generations" => {
-            return generations_response(State(state), Query(params), headers, body).await;
+            generations_response(State(state), Query(params), headers, body, &req_id).await
         }
         // Reject unsupported endpoints
         _ => {
-            error!("❌ Path not supported: {}", path);
-            return Err(ProxyError::Implementation(format!(
+            error!("❌ [{}] Path not supported: {}", req_id, path);
+            Err(ProxyError::Implementation(format!(
                 "Path not supported: {}",
                 path
-            )));
+            )))
+        }
+    };
+
+    // Log request end
+    match &result {
+        Ok(res) => {
+             log::info!("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓");
+             log::info!("┃ ✅ REQUEST FINISHED [{}]", req_id);
+             log::info!("┃ 📡 Status: {}", res.status());
+             log::info!("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛");
+        },
+        Err(e) => {
+             log::error!("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓");
+             log::error!("┃ ❌ REQUEST FAILED [{}]", req_id);
+             log::error!("┃ 💥 Error: {:?}", e);
+             log::error!("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛");
         }
     }
+
+    result
 }

@@ -1,7 +1,0 @@
-my_customx_config:
-    base_path: /extras
-    loras: loras/
-    checkpoints: checkpoints/
-    vae: vae/
-    controlnet: controlnet/
-    text_encoders: text_encoders/
