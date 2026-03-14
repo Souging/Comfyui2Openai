@@ -7,14 +7,14 @@
 //! The connection includes an automatic reconnection mechanism (exponential backoff strategy) to handle temporary network fluctuations or connection hangs.
 
 // use axum::http::HeaderMap; (removed unused)
-use log::{debug, error, warn, info};
+use log::{debug, error, info, warn};
 // use reqwest::Client; (removed unused)
+use futures::stream::{SplitStream, StreamExt};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use futures::stream::{StreamExt, SplitStream};
 
 /// Maximum number of completed job IDs to keep in memory
 /// Uses a circular buffer to prevent infinite memory growth
@@ -164,7 +164,11 @@ impl WebSocketManager {
     /// This task runs indefinitely and automatically reconnects if the connection is lost.
     /// Uses exponential backoff strategy to gracefully handle temporary network and server unavailability.
     async fn message_listener(
-        mut read: SplitStream<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>>,
+        mut read: SplitStream<
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+        >,
         manager: Arc<WebSocketManager>,
     ) {
         let mut retry_delay = Duration::from_secs(INITIAL_RECONNECT_DELAY_SECS);
@@ -186,7 +190,8 @@ impl WebSocketManager {
                                 if let Some(msg_type) = json.get("type").and_then(|v| v.as_str()) {
                                     // Look for execution status messages
                                     if msg_type == "executing" {
-                                        if let Some(data) = json.get("data").and_then(|v| v.as_object())
+                                        if let Some(data) =
+                                            json.get("data").and_then(|v| v.as_object())
                                         {
                                             if let Some(prompt_id) =
                                                 data.get("prompt_id").and_then(|v| v.as_str())
@@ -200,23 +205,35 @@ impl WebSocketManager {
                                                             prompt_id
                                                         );
                                                         // Add to completed buffer
-                                                        let mut jobs = manager.completed_jobs.lock().await;
+                                                        let mut jobs =
+                                                            manager.completed_jobs.lock().await;
                                                         jobs.add(prompt_id.to_string());
                                                     } else {
                                                         // Node still executing
                                                     }
                                                 } else {
                                                     // In some setups, missing node might also mean completion
-                                                    debug!("✅ Job finished (node null/missing) for: {}", prompt_id);
-                                                    let mut jobs = manager.completed_jobs.lock().await;
+                                                    debug!(
+                                                        "✅ Job finished (node null/missing) for: {}",
+                                                        prompt_id
+                                                    );
+                                                    let mut jobs =
+                                                        manager.completed_jobs.lock().await;
                                                     jobs.add(prompt_id.to_string());
                                                 }
                                             }
                                         }
                                     } else if msg_type == "execution_success" {
-                                        if let Some(data) = json.get("data").and_then(|v| v.as_object()) {
-                                            if let Some(prompt_id) = data.get("prompt_id").and_then(|v| v.as_str()) {
-                                                debug!("✅ Execution success received for: {}", prompt_id);
+                                        if let Some(data) =
+                                            json.get("data").and_then(|v| v.as_object())
+                                        {
+                                            if let Some(prompt_id) =
+                                                data.get("prompt_id").and_then(|v| v.as_str())
+                                            {
+                                                debug!(
+                                                    "✅ Execution success received for: {}",
+                                                    prompt_id
+                                                );
                                                 let mut jobs = manager.completed_jobs.lock().await;
                                                 jobs.add(prompt_id.to_string());
                                             }
@@ -236,7 +253,8 @@ impl WebSocketManager {
                         error!("❌ WebSocket connection closed by server");
                         break; // Exit inner loop to trigger reconnection
                     }
-                    Err(_) => { // Timeout
+                    Err(_) => {
+                        // Timeout
                         break; // Exit inner loop to trigger reconnection
                     }
                 }
@@ -278,15 +296,12 @@ impl WebSocketManager {
                         error!("❌ Reconnection failed: {}", e);
 
                         // Calculate next retry delay (exponential backoff)
-                        let next_delay_secs =
-                            (retry_delay.as_secs_f64() * RECONNECT_BACKOFF_MULTIPLIER)
-                                .min(MAX_RECONNECT_DELAY_SECS as f64);
+                        let next_delay_secs = (retry_delay.as_secs_f64()
+                            * RECONNECT_BACKOFF_MULTIPLIER)
+                            .min(MAX_RECONNECT_DELAY_SECS as f64);
                         retry_delay = Duration::from_secs_f64(next_delay_secs);
 
-                        warn!(
-                            "⏱️ Next reconnection attempt in {}s",
-                            retry_delay.as_secs()
-                        );
+                        warn!("⏱️ Next reconnection attempt in {}s", retry_delay.as_secs());
 
                         // Continue loop to retry
                     }
@@ -310,7 +325,10 @@ impl WebSocketManager {
     /// # Blocking Warning
     /// This function runs in an async context but will delay the current async task.
     /// Should only be called within an async Handler.
-    pub async fn wait_for_job_completion(&self, prompt_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn wait_for_job_completion(
+        &self,
+        prompt_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         debug!("⏳ Waiting for job completion for prompt_id: {}", prompt_id);
 
         let mut check_count = 0;
@@ -327,38 +345,47 @@ impl WebSocketManager {
             // Used to prevent infinite waiting if WebSocket misses a message
             check_count += 1;
             if check_count % 4 == 0 {
-                 let history_url = format!("http://{}:{}/history/{}", self.backend_url, self.backend_port, prompt_id);
-                 // Silent poll: Log only on success or error to reduce noise
+                let history_url = format!(
+                    "http://{}:{}/history/{}",
+                    self.backend_url, self.backend_port, prompt_id
+                );
+                // Silent poll: Log only on success or error to reduce noise
 
-                 let client = reqwest::Client::builder()
+                let client = reqwest::Client::builder()
                     .timeout(Duration::from_secs(3))
                     .build()
                     .unwrap_or_else(|_| reqwest::Client::new());
 
-                 match client.get(&history_url).send().await {
-                      Ok(resp) => {
-                          if resp.status().is_success() {
-                               match resp.json::<serde_json::Value>().await {
-                                   Ok(json) => {
-                                        if json.get(prompt_id).is_some() {
-                                             debug!("💡 Fallback: Job completion detected via History API for {}", prompt_id);
-                                             let mut jobs = self.completed_jobs.lock().await;
-                                             jobs.add(prompt_id.to_string());
-                                             return Ok(());
-                                        }
-                                        // Else: Still waiting, keep silent
-                                   },
-                                   Err(e) => warn!("⚠️ Fallback: Failed to parse history JSON: {}", e),
-                               }
-                          } else {
-                              // Only warn on non-404 errors (404 is normal for ongoing tasks)
-                              if resp.status() != 404 {
-                                  warn!("⚠️ Fallback: History API returned status: {}", resp.status());
-                              }
-                          }
-                      },
-                      Err(e) => warn!("⚠️ Fallback request failed: {}", e),
-                 }
+                match client.get(&history_url).send().await {
+                    Ok(resp) => {
+                        if resp.status().is_success() {
+                            match resp.json::<serde_json::Value>().await {
+                                Ok(json) => {
+                                    if json.get(prompt_id).is_some() {
+                                        debug!(
+                                            "💡 Fallback: Job completion detected via History API for {}",
+                                            prompt_id
+                                        );
+                                        let mut jobs = self.completed_jobs.lock().await;
+                                        jobs.add(prompt_id.to_string());
+                                        return Ok(());
+                                    }
+                                    // Else: Still waiting, keep silent
+                                }
+                                Err(e) => warn!("⚠️ Fallback: Failed to parse history JSON: {}", e),
+                            }
+                        } else {
+                            // Only warn on non-404 errors (404 is normal for ongoing tasks)
+                            if resp.status() != 404 {
+                                warn!(
+                                    "⚠️ Fallback: History API returned status: {}",
+                                    resp.status()
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => warn!("⚠️ Fallback request failed: {}", e),
+                }
             }
 
             // Sleep briefly to avoid busy-waiting and yield CPU

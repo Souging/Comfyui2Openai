@@ -12,21 +12,21 @@
 //! - Response formatting to match OpenAI standards
 //! - Base64 image encoding for API responses
 
+mod comfyui;
 mod config;
 mod proxy;
-mod comfyui;
 mod ws;
 
-use axum::{routing::any, Router};
+use axum::{Router, routing::any};
 use log::info;
 use reqwest::Client;
 use std::{sync::Arc, time::Duration};
 use tower_http::{cors::CorsLayer, limit::RequestBodyLimitLayer};
 
+use comfyui::WorkflowsLoader;
 use config::Config;
 use proxy::ProxyState;
 use ws::WebSocketManager;
-use comfyui::WorkflowsLoader;
 
 /// Entry point for the application with 8 worker threads for handling concurrent requests
 #[tokio::main(flavor = "multi_thread", worker_threads = 8)]
@@ -59,12 +59,18 @@ async fn main() {
     info!("   Host: {}", config.comfyui_backend.host);
     info!("   Port: {}", config.comfyui_backend.port);
     info!("   ClientID: {}", config.comfyui_backend.client_id);
-    info!("   Workflows Path: {}", config.comfyui_backend.workflows_folder);
+    info!(
+        "   Workflows Path: {}",
+        config.comfyui_backend.workflows_folder
+    );
     info!("   Use WebSockets: {}", config.comfyui_backend.use_ws);
     info!("");
     info!("⏱️  Routing Configuration:");
     info!("   Timeout (seconds): {}", config.routing.timeout_seconds);
-    info!("   Max Payload Size (MB): {}", config.routing.max_payload_size_mb);
+    info!(
+        "   Max Payload Size (MB): {}",
+        config.routing.max_payload_size_mb
+    );
     info!("");
     info!("📊 Logger Configuration:");
     info!("   Log Level: {}", config.log_level);
@@ -157,15 +163,15 @@ async fn run_server(
     // Load all workflow JSON files from the specified directory
     // Workflows are ComfyUI workflow definitions that map to specific models
     let workflows = match WorkflowsLoader::load_from_folder(&workflows_config.to_string()) {
-                Ok(workflows_map) => {
-                    info!("✅ Workflows loaded successfully");
-                    Arc::new(workflows_map)
-                }
-                Err(e) => {
-                    eprintln!("Failed to load workflows: {}", e);
-                    std::process::exit(1);
-                }
-            };
+        Ok(workflows_map) => {
+            info!("✅ Workflows loaded successfully");
+            Arc::new(workflows_map)
+        }
+        Err(e) => {
+            eprintln!("Failed to load workflows: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     // Wrap shared state in Arc (atomic reference counter) to safely share across
     // concurrent async tasks. This is required for the async handler functions
@@ -187,6 +193,8 @@ async fn run_server(
         // Route all HTTP methods to /v1/images/* path to match OpenAI API standard
         // This captures paths like /v1/images/generations
         .route("/v1/images/*path", any(proxy::proxy_handler))
+        // Route OpenAI-compatible video generation requests
+        .route("/v1/videos/*path", any(proxy::proxy_video_handler))
         // Enable CORS to allow requests from any origin
         .layer(CorsLayer::permissive())
         // Set request body size limit to prevent memory exhaustion
