@@ -2,13 +2,13 @@
 
 [🇺🇸 English README](README.md)
 
-这是一个使用 Rust 编写的高性能异步代理服务器，它为你的本地或远程 ComfyUI 实例提供了一个兼容 OpenAI 标准的 API 接口 (`/v1/images/generations`)。
+这是一个使用 Rust 编写的高性能异步代理服务器，它为你的本地或远程 ComfyUI 实例提供了一个兼容 OpenAI 标准的 API 接口（`/v1/images/generations`），并支持视频生成端点 `/v1/videos/generations`。
 
 这使得你可以使用任何支持 OpenAI DALL-E API 的客户端（例如 ChatGPT Web UI、Open WebUI、LangChain 等）来调用强大的 ComfyUI 图像生成工作流。
 
 ## 🚀 主要功能
 
-- **OpenAI 兼容**: 完美替代 `v1/images/generations` 端点。
+- **OpenAI 兼容**: 完美替代 `v1/images/generations` 和 `v1/videos/generations` 端点。
 - **WebSocket 支持**: 通过 ComfyUI 的 WebSocket 连接进行实时的任务状态追踪。
 - **动态工作流映射**: API 请求中的 `model` 名称直接映射到本地的 JSON 工作流文件。
 - **智能参数注入**: 自动将 Prompt（正向/负向）、随机种子 (Seed) 和图片尺寸注入到 ComfyUI 工作流的对应节点中。
@@ -121,6 +121,9 @@ curl http://localhost:8080/v1/images/generations \
 
 *注意: `model` 字段必须与 `workflows` 文件夹中的文件名一致 (不含 .json 后缀)。*
 
+`/v1/images/generations` 同样支持图生图（`image`）和多图生图（`images`）。
+`image`/`images` 支持 data URL、纯 base64 或 HTTP(S) URL，代理会在执行前自动上传到 ComfyUI。
+
 ### 2. Python (OpenAI SDK)
 
 ```python
@@ -151,3 +154,22 @@ image_url = response.data[0].b64_json
 ## 📝 许可证
 
 [MIT](LICENSE)
+
+
+### 3. CURL (视频)
+
+```bash
+curl http://localhost:8080/v1/videos/generations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-any-token" \
+  -d '{
+    "model": "hunyuan-video",
+    "prompt": "A cinematic drone shot over snowy mountains at sunrise",
+    "size": "1280x720",
+    "n": 1
+  }'
+```
+
+视频响应会在 `data[*].b64_json` 返回 Base64 内容，并通过 `mime_type` 标识编码格式（例如 `video/mp4`）。
+
+视频接口支持文生视频、图生视频（`image`）和多图生视频（`images`）。`image`/`images` 支持 data URL、纯 base64 或 HTTP(S) URL，代理会在执行前自动上传到 ComfyUI。

@@ -2,13 +2,13 @@
 
 [🇨🇳 中文文档 (Chinese README)](README_CN.md)
 
-A high-performance, asynchronous proxy server written in Rust that exposes an OpenAI-compatible API (`/v1/images/generations`) for your local or remote ComfyUI instance.
+A high-performance, asynchronous proxy server written in Rust that exposes an OpenAI-compatible API (`/v1/images/generations`) for your local or remote ComfyUI instance. It also supports OpenAI-style video generation via `/v1/videos/generations`.
 
 This allows you to use ComfyUI's powerful image generation workflows with any client that supports the OpenAI DALL-E API (e.g., ChatGPT web UIs, Open WebUI, LangChain, etc.).
 
 ## 🚀 Features
 
-- **OpenAI Compatible**: Drop-in replacement for the `v1/images/generations` endpoint.
+- **OpenAI Compatible**: Drop-in replacement for the `v1/images/generations` and `v1/videos/generations` endpoints.
 - **WebSocket Support**: Real-time task tracking via ComfyUI's WebSocket connection.
 - **Dynamic Workflow Mapping**: specific `model` names in API requests map directly to JSON workflow files.
 - **Parameter Injection**: Automatically injects prompts, negative prompts, seeds, and dimensions into your ComfyUI workflows.
@@ -118,6 +118,9 @@ curl http://localhost:8080/v1/images/generations \
 
 *Note: `model` must match the filename in your `workflows` folder (without .json).*
 
+`/v1/images/generations` also supports img2img (`image`) and multi-image img2img (`images`).
+`image`/`images` accept data URL, raw base64, or HTTP(S) URL; the proxy uploads them to ComfyUI before execution.
+
 ### 2. Python (OpenAI SDK)
 
 ```python
@@ -145,3 +148,22 @@ image_url = response.data[0].b64_json
 ## 📝 License
 
 [MIT](LICENSE)
+
+
+### 3. CURL (Video)
+
+```bash
+curl http://localhost:8080/v1/videos/generations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-any-token" \
+  -d '{
+    "model": "hunyuan-video",
+    "prompt": "A cinematic drone shot over snowy mountains at sunrise",
+    "size": "1280x720",
+    "n": 1
+  }'
+```
+
+Video responses return base64 payloads in `data[*].b64_json`, with `mime_type` indicating the encoded format (for example `video/mp4`).
+
+Video supports text-to-video, image-to-video (`image`), and multi-image-to-video (`images`) inputs. `image`/`images` accept data URL, raw base64, or HTTP(S) URL; the proxy uploads them to ComfyUI before execution.
