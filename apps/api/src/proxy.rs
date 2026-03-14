@@ -3,19 +3,19 @@
 //! This module implements the core proxy functionality, routing incoming OpenAI API
 //! requests to ComfyUI backend and handling error responses.
 
+use crate::comfyui::{generations_response, video_generations_response};
+use crate::ws::WebSocketManager;
 use axum::{
-    body::{Body},
+    body::Body,
     extract::{Path, Query, State},
     http::{HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response as AxumResponse},
 };
-use log::{error};
+use log::error;
 use reqwest::Client;
 use serde::Serialize;
-use std::{collections::HashMap, sync::Arc, time::Duration};
-use crate::ws::WebSocketManager;
-use crate::comfyui::{generations_response};
 use serde_json::Value;
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 /// Shared state passed to all request handlers
 ///
@@ -97,7 +97,6 @@ impl IntoResponse for ProxyError {
                 error!("❌ Implementation error: {}", msg);
                 (StatusCode::BAD_REQUEST, "IMPLEMENTATION_ERROR", msg)
             }
-
         };
 
         let error_response = ErrorResponse {
@@ -134,25 +133,16 @@ pub fn handle_request_error(e: reqwest::Error, full_url: &str) -> ProxyError {
     error!("❌ Is request: {}", e.is_request());
     error!("❌ Is decode: {}", e.is_decode());
     if e.is_timeout() {
-        ProxyError::Upstream(format!(
-            "Request timeout to {}: {}",
-            full_url, e
-        ))
+        ProxyError::Upstream(format!("Request timeout to {}: {}", full_url, e))
     } else if e.is_connect() {
         ProxyError::Upstream(format!(
             "Connection failed to {}: {} - Check if backend server is running",
             full_url, e
         ))
     } else if e.is_request() {
-        ProxyError::Upstream(format!(
-            "Request error to {}: {}",
-            full_url, e
-        ))
+        ProxyError::Upstream(format!("Request error to {}: {}", full_url, e))
     } else {
-        ProxyError::Upstream(format!(
-            "Network error to {}: {}",
-            full_url, e
-        ))
+        ProxyError::Upstream(format!("Network error to {}: {}", full_url, e))
     }
 }
 
@@ -193,10 +183,13 @@ pub async fn proxy_handler(
     headers: HeaderMap,
     body: Body,
 ) -> Result<AxumResponse, ProxyError> {
-
     // Generate a short ID for tracking this request
-    let req_id = uuid::Uuid::new_v4().to_string().chars().take(8).collect::<String>();
-    
+    let req_id = uuid::Uuid::new_v4()
+        .to_string()
+        .chars()
+        .take(8)
+        .collect::<String>();
+
     // Log request start with visual separator
     log::info!("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓");
     log::info!("┃ 🚀 REQUEST START [{}]", req_id);
@@ -205,7 +198,7 @@ pub async fn proxy_handler(
     log::info!("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛");
 
     // Route based on the requested endpoint
-    let result = match path.as_str()  {
+    let result = match path.as_str() {
         // Handle OpenAI image generation API equivalent
         "generations" => {
             generations_response(State(state), Query(params), headers, body, &req_id).await
@@ -223,16 +216,71 @@ pub async fn proxy_handler(
     // Log request end
     match &result {
         Ok(res) => {
-             log::info!("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓");
-             log::info!("┃ ✅ REQUEST FINISHED [{}]", req_id);
-             log::info!("┃ 📡 Status: {}", res.status());
-             log::info!("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛");
-        },
+            log::info!("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓");
+            log::info!("┃ ✅ REQUEST FINISHED [{}]", req_id);
+            log::info!("┃ 📡 Status: {}", res.status());
+            log::info!("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛");
+        }
         Err(e) => {
-             log::error!("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓");
-             log::error!("┃ ❌ REQUEST FAILED [{}]", req_id);
-             log::error!("┃ 💥 Error: {:?}", e);
-             log::error!("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛");
+            log::error!("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓");
+            log::error!("┃ ❌ REQUEST FAILED [{}]", req_id);
+            log::error!("┃ 💥 Error: {:?}", e);
+            log::error!("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛");
+        }
+    }
+
+    result
+}
+
+/// Main request handler for all /v1/videos/* paths
+///
+/// Routes incoming OpenAI video API requests to the appropriate backend handler
+/// based on the path segment (e.g., "generations" for /v1/videos/generations).
+pub async fn proxy_video_handler(
+    State(state): State<Arc<ProxyState>>,
+    Path(path): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+    _method: Method,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<AxumResponse, ProxyError> {
+    let req_id = uuid::Uuid::new_v4()
+        .to_string()
+        .chars()
+        .take(8)
+        .collect::<String>();
+
+    log::info!("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓");
+    log::info!("┃ 🎬 VIDEO REQUEST START [{}]", req_id);
+    log::info!("┃ 📍 Path: /v1/videos/{}", path);
+    log::info!("┃ 🔗 Method: POST");
+    log::info!("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛");
+
+    let result = match path.as_str() {
+        "generations" => {
+            video_generations_response(State(state), Query(params), headers, body, &req_id).await
+        }
+        _ => {
+            error!("❌ [{}] Path not supported: {}", req_id, path);
+            Err(ProxyError::Implementation(format!(
+                "Path not supported: {}",
+                path
+            )))
+        }
+    };
+
+    match &result {
+        Ok(res) => {
+            log::info!("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓");
+            log::info!("┃ ✅ VIDEO REQUEST FINISHED [{}]", req_id);
+            log::info!("┃ 📡 Status: {}", res.status());
+            log::info!("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛");
+        }
+        Err(e) => {
+            log::error!("┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓");
+            log::error!("┃ ❌ VIDEO REQUEST FAILED [{}]", req_id);
+            log::error!("┃ 💥 Error: {:?}", e);
+            log::error!("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛");
         }
     }
 
